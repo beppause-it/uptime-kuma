@@ -25,7 +25,7 @@ jobs:
           script: |
             set -e
 
-            echo "==> Creating data directory if not exists"
+            echo "==> Creating data directory if not exists "
             mkdir -p /home/ubuntu/data-stage
 
             echo "==> Navigating to app directory"
