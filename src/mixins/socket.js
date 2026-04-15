@@ -5,6 +5,25 @@ import Favico from "favico.js";
 import dayjs from "dayjs";
 import mitt from "mitt";
 
+/**
+ * Read a cookie value by name
+ * @param {string} name Cookie name
+ * @returns {string|null} Cookie value or null
+ */
+function getCookieValue(name) {
+    const match = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+    return match ? decodeURIComponent(match[1]) : null;
+}
+
+/**
+ * Delete a cookie by name
+ * @param {string} name Cookie name
+ * @returns {void}
+ */
+function deleteCookie(name) {
+    document.cookie = name + "=; Path=/; Max-Age=0; SameSite=Lax";
+}
+
 import { DOWN, MAINTENANCE, PENDING, UP } from "../util.ts";
 import {
     getDevContainerServerHostname,
@@ -135,6 +154,16 @@ export default {
             });
 
             socket.on("loginRequired", () => {
+                // Check for SSO cookie first (set by /api/auth/token-login)
+                const ssoToken = getCookieValue("auth_token");
+                if (ssoToken) {
+                    deleteCookie("auth_token");
+                    this.storage().token = ssoToken;
+                    this.socket.token = ssoToken;
+                    this.loginByToken(ssoToken);
+                    return;
+                }
+
                 let token = this.storage().token;
                 if (token && token !== "autoLogin") {
                     this.loginByToken(token);

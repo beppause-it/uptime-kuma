@@ -193,6 +193,7 @@ const { SetupDatabase } = require("./setup-database");
 const { chartSocketHandler } = require("./socket-handlers/chart-socket-handler");
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Global Middleware
 app.use(function (req, res, next) {
@@ -357,6 +358,94 @@ let needSetup = false;
     // Status Page Router
     const statusPageRouter = require("./routers/status-page-router");
     app.use(statusPageRouter);
+
+    // ***************************
+    // SSO Hub Token Login
+    // ***************************
+    app.post("/api/auth/token-login", async (req, res) => {
+        const isJSON = req.headers["accept"] && req.headers["accept"].includes("application/json");
+
+        const errorResponse = (httpCode, errorCode) => {
+            if (isJSON) {
+                return res.status(httpCode).json({ success: false, error: errorCode });
+            }
+            return res.redirect(`/login?error=${errorCode}`);
+        };
+
+        // If AUTH_BASE_URL is not configured, SSO is unavailable
+        const authBaseUrl = config.authBaseUrl;
+        if (!authBaseUrl) {
+            return errorResponse(503, "auth_unavailable");
+        }
+
+        // If no users exist yet, redirect to setup — SSO is skipped
+        if (needSetup) {
+            if (isJSON) {
+                return res.status(503).json({ success: false, error: "setup_required" });
+            }
+            return res.redirect("/setup");
+        }
+
+        // Validate token presence
+        const token = req.body && req.body.token;
+        if (!token) {
+            return errorResponse(400, "token_missing");
+        }
+
+        // Validate redirect_to to prevent open redirect
+        let redirectTo = (req.body && req.body.redirect_to) || "/dashboard";
+        if (!redirectTo.startsWith("/") || redirectTo.startsWith("//")) {
+            redirectTo = "/dashboard";
+        }
+
+        // Validate token against SSO auth backend
+        let ssoUser;
+        try {
+            const axios = require("axios");
+            const authResponse = await axios.get(`${authBaseUrl}/auth/user`, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 10000,
+            });
+            ssoUser = authResponse.data && authResponse.data.user;
+            if (!ssoUser || !ssoUser.email) {
+                throw new Error("Invalid user profile in auth response");
+            }
+        } catch (e) {
+            if (e.response && e.response.status >= 400 && e.response.status < 500) {
+                return errorResponse(401, "token_invalid");
+            }
+            return errorResponse(503, "auth_unavailable");
+        }
+
+        // Find existing user or create a new one
+        const username = ssoUser.email;
+        let user = await R.findOne("user", " username = ? AND active = 1 ", [username]);
+        if (!user) {
+            const { nanoid } = require("nanoid");
+            user = R.dispense("user");
+            user.username = username;
+            user.password = await passwordHash.generate(nanoid(32));
+            user.active = 1;
+            await R.store(user);
+            log.info("sso", `Created new SSO user: ${username}`);
+        }
+
+        // Generate internal Uptime Kuma JWT
+        const ukToken = User.createJWT(user, server.jwtSecret);
+
+        // Set HttpOnly cookie (12 hours)
+        res.cookie("auth_token", ukToken, {
+            httpOnly: true,
+            path: "/",
+            sameSite: "Lax",
+            maxAge: 12 * 60 * 60 * 1000,
+        });
+
+        if (isJSON) {
+            return res.json({ success: true, redirectUrl: redirectTo });
+        }
+        return res.redirect(redirectTo);
+    });
 
     // Universal Route Handler, must be at the end of all express routes.
     app.get("*", async (_request, response) => {
