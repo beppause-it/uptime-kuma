@@ -25,6 +25,9 @@ jobs:
           script: |
             set -e
 
+            echo "==> Creating data directory if not exists"
+            mkdir -p /home/ubuntu/data-main
+
             echo "==> Navigating to app directory"
             cd /home/ubuntu/uptime-kuma-main
 
@@ -38,6 +41,6 @@ jobs:
             npm run build
 
             echo "==> Restarting app with PM2"
-            pm2 restart uptime-kuma-main || pm2 start server/server.js --name uptime-kuma-main
+            DATA_DIR=/home/ubuntu/data-main pm2 restart uptime-kuma-main || DATA_DIR=/home/ubuntu/data-main pm2 start server/server.js --name uptime-kuma-main
 
             echo "==> Deploy to PRODUCTION completed successfully"

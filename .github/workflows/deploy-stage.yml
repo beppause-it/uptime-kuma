@@ -25,6 +25,9 @@ jobs:
           script: |
             set -e
 
+            echo "==> Creating data directory if not exists"
+            mkdir -p /home/ubuntu/data-stage
+
             echo "==> Navigating to app directory"
             cd /home/ubuntu/uptime-kuma-stage
 
@@ -38,6 +41,6 @@ jobs:
             npm run build
 
             echo "==> Restarting app with PM2"
-            pm2 restart uptime-kuma-stage || pm2 start server/server.js --name uptime-kuma-stage
+            DATA_DIR=/home/ubuntu/data-stage pm2 restart uptime-kuma-stage || DATA_DIR=/home/ubuntu/data-stage pm2 start server/server.js --name uptime-kuma-stage
 
             echo "==> Deploy to STAGE completed successfully"
