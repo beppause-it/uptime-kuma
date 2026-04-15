@@ -31,6 +31,17 @@ jobs:
             echo "==> Navigating to app directory"
             cd /home/ubuntu/uptime-kuma-stage
 
+            echo "==> Creating .env config if not exists"
+            if [ ! -f .env ]; then
+              cat > .env << 'EOF'
+UPTIME_KUMA_PORT=3001
+DATA_DIR=/home/ubuntu/data-stage
+EOF
+              echo ".env created"
+            else
+              echo ".env already exists, skipping"
+            fi
+
             echo "==> Pulling latest changes from stage branch"
             git pull origin stage
 
