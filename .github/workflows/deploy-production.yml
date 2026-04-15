@@ -1,0 +1,42 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to Production Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          port: ${{ secrets.PROD_SSH_PORT || 22 }}
+          script: |
+            set -e
+
+            echo "==> Navigating to app directory"
+            cd ${{ secrets.PROD_APP_DIR }}
+
+            echo "==> Pulling latest changes from main branch"
+            git pull origin main
+
+            echo "==> Installing dependencies"
+            npm install --omit=dev --no-audit
+
+            echo "==> Building frontend"
+            npm run build
+
+            echo "==> Restarting app with PM2"
+            pm2 restart uptime-kuma || pm2 start server/server.js --name uptime-kuma -- --port 3001
+
+            echo "==> Deploy to PRODUCTION completed successfully"

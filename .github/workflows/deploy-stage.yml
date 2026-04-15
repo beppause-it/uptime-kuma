@@ -1,0 +1,42 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches:
+      - stage
+
+jobs:
+  deploy:
+    name: Deploy to Stage Server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGE_SSH_HOST }}
+          username: ${{ secrets.STAGE_SSH_USER }}
+          key: ${{ secrets.STAGE_SSH_KEY }}
+          port: ${{ secrets.STAGE_SSH_PORT || 22 }}
+          script: |
+            set -e
+
+            echo "==> Navigating to app directory"
+            cd ${{ secrets.STAGE_APP_DIR }}
+
+            echo "==> Pulling latest changes from stage branch"
+            git pull origin stage
+
+            echo "==> Installing dependencies"
+            npm install --omit=dev --no-audit
+
+            echo "==> Building frontend"
+            npm run build
+
+            echo "==> Restarting app with PM2"
+            pm2 restart uptime-kuma-stage || pm2 start server/server.js --name uptime-kuma-stage -- --port 3001
+
+            echo "==> Deploy to STAGE completed successfully"
