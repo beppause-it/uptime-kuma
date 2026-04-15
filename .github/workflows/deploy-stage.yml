@@ -33,10 +33,8 @@ jobs:
 
             echo "==> Creating .env config if not exists"
             if [ ! -f .env ]; then
-              cat > .env << 'EOF'
-UPTIME_KUMA_PORT=3001
-DATA_DIR=/home/ubuntu/data-stage
-EOF
+              echo "UPTIME_KUMA_PORT=3001" > .env
+              echo "DATA_DIR=/home/ubuntu/data-stage" >> .env
               echo ".env created"
             else
               echo ".env already exists, skipping"
