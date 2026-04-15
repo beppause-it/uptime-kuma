@@ -229,6 +229,21 @@ let needSetup = false;
         process.exit(1);
     }
 
+    // Validate AUTH_BASE_URL if configured
+    if (config.authBaseUrl) {
+        try {
+            const parsedAuthUrl = new URL(config.authBaseUrl);
+            if (![ "http:", "https:" ].includes(parsedAuthUrl.protocol)) {
+                throw new Error("AUTH_BASE_URL must use http or https protocol");
+            }
+            log.info("sso", `SSO auth backend configured: ${config.authBaseUrl}`);
+        } catch (e) {
+            log.error("sso", `Invalid AUTH_BASE_URL: "${config.authBaseUrl}" — ${e.message}. SSO endpoint will respond with 503.`);
+        }
+    } else {
+        log.info("sso", "AUTH_BASE_URL not set — SSO token-login endpoint is disabled (responds 503)");
+    }
+
     // Database should be ready now
     await server.initAfterDatabaseReady();
     server.entryPage = await Settings.get("entryPage");
@@ -433,9 +448,10 @@ let needSetup = false;
         // Generate internal Uptime Kuma JWT
         const ukToken = User.createJWT(user, server.jwtSecret);
 
-        // Set HttpOnly cookie (12 hours)
+        // Set cookie (12 hours) — not HttpOnly so the frontend JS can read it
+        // once to bootstrap the socket session, then stores it in localStorage
         res.cookie("auth_token", ukToken, {
-            httpOnly: true,
+            httpOnly: false,
             path: "/",
             sameSite: "Lax",
             maxAge: 12 * 60 * 60 * 1000,
