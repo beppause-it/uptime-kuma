@@ -19,14 +19,14 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.STAGE_SSH_HOST }}
-          username: ${{ secrets.STAGE_SSH_USER }}
+          username: ubuntu
           key: ${{ secrets.STAGE_SSH_KEY }}
-          port: ${{ secrets.STAGE_SSH_PORT || 22 }}
+          port: 22
           script: |
             set -e
 
             echo "==> Navigating to app directory"
-            cd ${{ secrets.STAGE_APP_DIR }}
+            cd /home/ubuntu/uptime-kuma-stage
 
             echo "==> Pulling latest changes from stage branch"
             git pull origin stage
@@ -38,6 +38,6 @@ jobs:
             npm run build
 
             echo "==> Restarting app with PM2"
-            pm2 restart uptime-kuma-stage || pm2 start server/server.js --name uptime-kuma-stage -- --port 3001
+            pm2 restart uptime-kuma-stage || pm2 start server/server.js --name uptime-kuma-stage
 
             echo "==> Deploy to STAGE completed successfully"
