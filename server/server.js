@@ -463,6 +463,13 @@ let needSetup = false;
         return res.redirect(redirectTo);
     });
 
+    // SSO logout: clears the HttpOnly auth_token cookie so the socket middleware
+    // no longer auto-logs the user in on the next connection.
+    app.get("/api/auth/sso-logout", (req, res) => {
+        res.clearCookie("auth_token", { path: "/", sameSite: "Lax" });
+        res.json({ ok: true });
+    });
+
     // Universal Route Handler, must be at the end of all express routes.
     app.get("*", async (_request, response) => {
         if (_request.originalUrl.startsWith("/upload/")) {

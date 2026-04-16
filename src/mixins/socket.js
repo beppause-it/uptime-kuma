@@ -471,6 +471,9 @@ export default {
          * @returns {void}
          */
         logout() {
+            // Clear the HttpOnly SSO cookie server-side so the socket middleware
+            // cannot re-authenticate the user on the next connection attempt.
+            fetch("/api/auth/sso-logout", { credentials: "same-origin" }).catch(() => {});
             socket.emit("logout", () => {});
             this.storage().removeItem("token");
             this.socket.token = null;
