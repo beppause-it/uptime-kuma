@@ -478,6 +478,7 @@ export default {
             this.storage().removeItem("token");
             this.socket.token = null;
             this.loggedIn = false;
+            this.allowLoginDialog = true;
             this.username = null;
             this.clearData();
         },
