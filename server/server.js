@@ -1122,7 +1122,7 @@ let needSetup = false;
 
                 log.info("monitor", `Get Monitor: ${monitorID} User ID: ${socket.userID}`);
 
-                let monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                let monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
                 const monitorData = [{ id: monitor.id, active: monitor.active }];
                 const preloadData = await Monitor.preparePreloadData(monitorData);
                 callback({
@@ -1245,7 +1245,7 @@ let needSetup = false;
                 const startTime = Date.now();
 
                 // Check if this is a group monitor
-                const monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                const monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
 
                 // Log with context about deletion type
                 if (monitor && monitor.type === "group") {
@@ -1927,10 +1927,11 @@ async function updateMonitorNotification(monitorID, notificationIDList) {
  * @throws {Error} The specified user does not own the monitor
  */
 async function checkOwner(userID, monitorID) {
-    let row = await R.getRow("SELECT id FROM monitor WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    // Monitors are shared across all authenticated users — ownership is not enforced.
+    let row = await R.getRow("SELECT id FROM monitor WHERE id = ? ", [monitorID]);
 
     if (!row) {
-        throw new Error("You do not own this monitor.");
+        throw new Error("Monitor not found.");
     }
 }
 
@@ -2019,7 +2020,7 @@ async function startMonitor(userID, monitorID) {
 
     log.info("manage", `Resume Monitor: ${monitorID} User ID: ${userID}`);
 
-    await R.exec("UPDATE monitor SET active = 1 WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    await R.exec("UPDATE monitor SET active = 1 WHERE id = ? ", [monitorID]);
 
     let monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
 
@@ -2052,7 +2053,7 @@ async function pauseMonitor(userID, monitorID) {
 
     log.info("manage", `Pause Monitor: ${monitorID} User ID: ${userID}`);
 
-    await R.exec("UPDATE monitor SET active = 0 WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    await R.exec("UPDATE monitor SET active = 0 WHERE id = ? ", [monitorID]);
 
     if (monitorID in server.monitorList) {
         await server.monitorList[monitorID].stop();
