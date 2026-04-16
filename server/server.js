@@ -482,13 +482,13 @@ let needSetup = false;
         // Generate internal Uptime Kuma JWT
         const ukToken = User.createJWT(user, server.jwtSecret);
 
-        // Set HttpOnly cookie (10 min) — just long enough for socket handshake bootstrap.
-        // The socket.io middleware reads it server-side; the frontend never touches it.
+        // Set HttpOnly cookie (12 ore, come da specifica SSO hub).
+        // Il socket.io middleware lo legge server-side al momento della connessione.
         res.cookie("auth_token", ukToken, {
             httpOnly: true,
             path: "/",
             sameSite: "Lax",
-            maxAge: 10 * 60 * 1000,
+            maxAge: 12 * 60 * 60 * 1000,
         });
 
         if (isJSON) {
@@ -671,14 +671,13 @@ let needSetup = false;
                     try {
                         log.info("sso", `Local auth failed for ${data.username}, trying SSO backend. IP=${clientIP}`);
                         const axios = require("axios");
-                        const loginResp = await axios.post(`${authBaseUrl}/auth/login`, {
+                        const loginResp = await axios.post(`${authBaseUrl}/auth/token`, {
                             email: data.username,
                             password: data.password,
+                            version: "4.0",
                         }, { timeout: 10000 });
 
-                        log.debug("sso", `SSO login response status: ${loginResp.status}, data: ${JSON.stringify(loginResp.data)}`);
-
-                        const extToken = loginResp.data && (loginResp.data.token || loginResp.data.access_token);
+                        const extToken = loginResp.data && loginResp.data.token;
                         if (!extToken) {
                             throw { code: "token_invalid" };
                         }
