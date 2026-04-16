@@ -1856,7 +1856,11 @@ let needSetup = false;
         } else if (socket.ssoUser) {
             log.info("sso", `SSO cookie auto-login for user: ${socket.ssoUser.username}`);
             await afterLogin(socket, socket.ssoUser);
-            socket.emit("autoLogin");
+            // Emit a real JWT so the frontend stores it in localStorage —
+            // avoids the "authentication disabled" UI and allows proper re-auth on reconnect.
+            socket.emit("ssoLogin", {
+                token: User.createJWT(socket.ssoUser, server.jwtSecret),
+            });
         } else {
             socket.emit("loginRequired");
             log.debug("auth", "need auth");

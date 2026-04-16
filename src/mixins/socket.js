@@ -134,6 +134,17 @@ export default {
                 this.allowLoginDialog = false;
             });
 
+            // SSO hub token-login: server validated the HttpOnly cookie and bootstrapped
+            // the session — receive a real JWT so the UI doesn't show "auth disabled"
+            // and the token persists in localStorage for reconnects after cookie expiry.
+            socket.on("ssoLogin", (data) => {
+                this.storage().token = data.token;
+                this.socket.token = data.token;
+                this.loggedIn = true;
+                this.username = this.getJWTPayload()?.username;
+                this.allowLoginDialog = false;
+            });
+
             socket.on("loginRequired", () => {
                 let token = this.storage().token;
                 if (token && token !== "autoLogin") {
