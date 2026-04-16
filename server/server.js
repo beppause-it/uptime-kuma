@@ -375,6 +375,60 @@ let needSetup = false;
     app.use(statusPageRouter);
 
     // ***************************
+    // SSO shared helpers
+    // ***************************
+
+    /**
+     * Validate a JWT token against the external auth backend.
+     * Returns the ssoUser profile object (with at least .email).
+     * Throws { code: "token_invalid" } on 4xx or { code: "auth_unavailable" } on 5xx/network.
+     * @param {string} token
+     * @param {string} authBaseUrl
+     * @returns {Promise<object>} ssoUser
+     */
+    async function ssoValidateToken(token, authBaseUrl) {
+        const axios = require("axios");
+        try {
+            const authResponse = await axios.get(`${authBaseUrl}/auth/user`, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 10000,
+            });
+            const ssoUser = authResponse.data && authResponse.data.user;
+            if (!ssoUser || !ssoUser.email) {
+                throw { code: "auth_unavailable" };
+            }
+            return ssoUser;
+        } catch (e) {
+            if (e.code) {
+                throw e;
+            }
+            if (e.response && e.response.status >= 400 && e.response.status < 500) {
+                throw { code: "token_invalid" };
+            }
+            throw { code: "auth_unavailable" };
+        }
+    }
+
+    /**
+     * Find an existing active local user by email, or create one.
+     * @param {string} email
+     * @returns {Promise<object>} RedBeanNode user
+     */
+    async function ssoFindOrCreateLocalUser(email) {
+        let user = await R.findOne("user", " username = ? AND active = 1 ", [email]);
+        if (!user) {
+            const { nanoid } = require("nanoid");
+            user = R.dispense("user");
+            user.username = email;
+            user.password = await passwordHash.generate(nanoid(32));
+            user.active = 1;
+            await R.store(user);
+            log.info("sso", `Created new SSO user: ${email}`);
+        }
+        return user;
+    }
+
+    // ***************************
     // SSO Hub Token Login
     // ***************************
     app.post("/api/auth/token-login", async (req, res) => {
@@ -413,36 +467,16 @@ let needSetup = false;
             redirectTo = "/dashboard";
         }
 
-        // Validate token against SSO auth backend
-        let ssoUser;
+        // Validate token against SSO auth backend and find/create local user
+        let user;
         try {
-            const axios = require("axios");
-            const authResponse = await axios.get(`${authBaseUrl}/auth/user`, {
-                headers: { Authorization: `Bearer ${token}` },
-                timeout: 10000,
-            });
-            ssoUser = authResponse.data && authResponse.data.user;
-            if (!ssoUser || !ssoUser.email) {
-                throw new Error("Invalid user profile in auth response");
-            }
+            const ssoUser = await ssoValidateToken(token, authBaseUrl);
+            user = await ssoFindOrCreateLocalUser(ssoUser.email);
         } catch (e) {
-            if (e.response && e.response.status >= 400 && e.response.status < 500) {
+            if (e.code === "token_invalid") {
                 return errorResponse(401, "token_invalid");
             }
             return errorResponse(503, "auth_unavailable");
-        }
-
-        // Find existing user or create a new one
-        const username = ssoUser.email;
-        let user = await R.findOne("user", " username = ? AND active = 1 ", [username]);
-        if (!user) {
-            const { nanoid } = require("nanoid");
-            user = R.dispense("user");
-            user.username = username;
-            user.password = await passwordHash.generate(nanoid(32));
-            user.active = 1;
-            await R.store(user);
-            log.info("sso", `Created new SSO user: ${username}`);
         }
 
         // Generate internal Uptime Kuma JWT
@@ -631,13 +665,47 @@ let needSetup = false;
                     }
                 }
             } else {
-                log.warn("auth", `Incorrect username or password for user ${data.username}. IP=${clientIP}`);
+                // Local auth failed — try external SSO backend if configured
+                const authBaseUrl = config.authBaseUrl;
+                if (authBaseUrl) {
+                    try {
+                        log.info("sso", `Local auth failed for ${data.username}, trying SSO backend. IP=${clientIP}`);
+                        const axios = require("axios");
+                        const loginResp = await axios.post(`${authBaseUrl}/auth/login`, {
+                            username: data.username,
+                            password: data.password,
+                        }, { timeout: 10000 });
 
-                callback({
-                    ok: false,
-                    msg: "authIncorrectCreds",
-                    msgi18n: true,
-                });
+                        const extToken = loginResp.data && (loginResp.data.token || loginResp.data.access_token);
+                        if (!extToken) {
+                            throw { code: "token_invalid" };
+                        }
+
+                        const ssoProfile = await ssoValidateToken(extToken, authBaseUrl);
+                        const user = await ssoFindOrCreateLocalUser(ssoProfile.email);
+
+                        log.info("sso", `SSO fallback login success for ${ssoProfile.email}. IP=${clientIP}`);
+                        await afterLogin(socket, user);
+                        callback({
+                            ok: true,
+                            token: User.createJWT(user, server.jwtSecret),
+                        });
+                    } catch (e) {
+                        log.warn("sso", `SSO fallback login failed for ${data.username}: ${e.code || e.message}. IP=${clientIP}`);
+                        callback({
+                            ok: false,
+                            msg: "authIncorrectCreds",
+                            msgi18n: true,
+                        });
+                    }
+                } else {
+                    log.warn("auth", `Incorrect username or password for user ${data.username}. IP=${clientIP}`);
+                    callback({
+                        ok: false,
+                        msg: "authIncorrectCreds",
+                        msgi18n: true,
+                    });
+                }
             }
         });
 
