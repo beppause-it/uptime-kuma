@@ -672,9 +672,11 @@ let needSetup = false;
                         log.info("sso", `Local auth failed for ${data.username}, trying SSO backend. IP=${clientIP}`);
                         const axios = require("axios");
                         const loginResp = await axios.post(`${authBaseUrl}/auth/login`, {
-                            username: data.username,
+                            email: data.username,
                             password: data.password,
                         }, { timeout: 10000 });
+
+                        log.debug("sso", `SSO login response status: ${loginResp.status}, data: ${JSON.stringify(loginResp.data)}`);
 
                         const extToken = loginResp.data && (loginResp.data.token || loginResp.data.access_token);
                         if (!extToken) {
@@ -691,7 +693,10 @@ let needSetup = false;
                             token: User.createJWT(user, server.jwtSecret),
                         });
                     } catch (e) {
-                        log.warn("sso", `SSO fallback login failed for ${data.username}: ${e.code || e.message}. IP=${clientIP}`);
+                        const detail = e.response
+                            ? `HTTP ${e.response.status}: ${JSON.stringify(e.response.data)}`
+                            : (e.code || e.message);
+                        log.warn("sso", `SSO fallback login failed for ${data.username}: ${detail}. IP=${clientIP}`);
                         callback({
                             ok: false,
                             msg: "authIncorrectCreds",
