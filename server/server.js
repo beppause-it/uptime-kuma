@@ -448,13 +448,13 @@ let needSetup = false;
         // Generate internal Uptime Kuma JWT
         const ukToken = User.createJWT(user, server.jwtSecret);
 
-        // Set cookie (12 hours) — not HttpOnly so the frontend JS can read it
-        // once to bootstrap the socket session, then stores it in localStorage
+        // Set HttpOnly cookie (10 min) — just long enough for socket handshake bootstrap.
+        // The socket.io middleware reads it server-side; the frontend never touches it.
         res.cookie("auth_token", ukToken, {
-            httpOnly: false,
+            httpOnly: true,
             path: "/",
             sameSite: "Lax",
-            maxAge: 12 * 60 * 60 * 1000,
+            maxAge: 10 * 60 * 1000,
         });
 
         if (isJSON) {
@@ -470,6 +470,26 @@ let needSetup = false;
         } else {
             response.send(server.indexHTML);
         }
+    });
+
+    // SSO cookie middleware: reads auth_token from the socket handshake headers
+    // and attaches the validated user to the socket before the connection handler runs.
+    io.use(async (socket, next) => {
+        try {
+            const rawCookies = socket.handshake.headers.cookie || "";
+            const match = rawCookies.match(/(?:^|; )auth_token=([^;]*)/);
+            if (match) {
+                const ssoToken = decodeURIComponent(match[1]);
+                const decoded = jwt.verify(ssoToken, server.jwtSecret);
+                const ssoUser = await R.findOne("user", " username = ? AND active = 1 ", [decoded.username]);
+                if (ssoUser && decoded.h === shake256(ssoUser.password, SHAKE256_LENGTH)) {
+                    socket.ssoUser = ssoUser;
+                }
+            }
+        } catch (_) {
+            // Invalid or expired SSO cookie — proceed without auto-login
+        }
+        next();
     });
 
     log.debug("server", "Adding socket handler");
@@ -1832,6 +1852,10 @@ let needSetup = false;
         if (await setting("disableAuth")) {
             log.info("auth", "Disabled Auth: auto login to admin");
             await afterLogin(socket, await R.findOne("user"));
+            socket.emit("autoLogin");
+        } else if (socket.ssoUser) {
+            log.info("sso", `SSO cookie auto-login for user: ${socket.ssoUser.username}`);
+            await afterLogin(socket, socket.ssoUser);
             socket.emit("autoLogin");
         } else {
             socket.emit("loginRequired");

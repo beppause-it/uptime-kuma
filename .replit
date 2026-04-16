@@ -38,3 +38,13 @@ externalPort = 80
 deploymentTarget = "vm"
 run = ["node", "server/server.js"]
 build = ["npm", "run", "build"]
+
+[userenv]
+
+[userenv.shared]
+
+[userenv.development]
+AUTH_API_URL = "https://api-test0.biolaser.it/api"
+
+[userenv.production]
+AUTH_API_URL = "https://api0.biolaser.it/api"
