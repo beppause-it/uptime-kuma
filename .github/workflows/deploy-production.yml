@@ -31,14 +31,12 @@ jobs:
             echo "==> Navigating to app directory"
             cd /home/ubuntu/uptime-kuma-main
 
-            echo "==> Creating .env config if not exists"
-            if [ ! -f .env ]; then
-              echo "UPTIME_KUMA_PORT=3002" > .env
-              echo "DATA_DIR=/home/ubuntu/data-main" >> .env
-              echo ".env created"
-            else
-              echo ".env already exists, skipping"
-            fi
+            echo "==> Writing .env config"
+            cat > .env <<'EOF'
+            UPTIME_KUMA_PORT=3002
+            DATA_DIR=/home/ubuntu/data-main
+            AUTH_API_URL=https://api0.biolaser.it/api
+            EOF
 
             echo "==> Pulling latest changes from main branch"
             git pull origin main
@@ -49,7 +47,9 @@ jobs:
             echo "==> Building frontend"
             npm run build
 
-            echo "==> Restarting app with PM2"
-            DATA_DIR=/home/ubuntu/data-main pm2 restart uptime-kuma-main || DATA_DIR=/home/ubuntu/data-main pm2 start server/server.js --name uptime-kuma-main
+            echo "==> Restarting app with PM2 (loading .env)"
+            set -a; source .env; set +a
+            pm2 restart uptime-kuma-main --update-env || \
+              pm2 start server/server.js --name uptime-kuma-main --update-env
 
             echo "==> Deploy to PRODUCTION completed successfully"

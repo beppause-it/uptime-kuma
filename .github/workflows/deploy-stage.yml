@@ -31,14 +31,12 @@ jobs:
             echo "==> Navigating to app directory"
             cd /home/ubuntu/uptime-kuma-stage
 
-            echo "==> Creating .env config if not exists"
-            if [ ! -f .env ]; then
-              echo "UPTIME_KUMA_PORT=3001" > .env
-              echo "DATA_DIR=/home/ubuntu/data-stage" >> .env
-              echo ".env created"
-            else
-              echo ".env already exists, skipping"
-            fi
+            echo "==> Writing .env config"
+            cat > .env <<'EOF'
+            UPTIME_KUMA_PORT=3001
+            DATA_DIR=/home/ubuntu/data-stage
+            AUTH_API_URL=https://api-test0.biolaser.it/api
+            EOF
 
             echo "==> Pulling latest changes from stage branch"
             git pull origin stage
@@ -49,7 +47,9 @@ jobs:
             echo "==> Building frontend"
             npm run build
 
-            echo "==> Restarting app with PM2"
-            DATA_DIR=/home/ubuntu/data-stage pm2 restart uptime-kuma-stage || DATA_DIR=/home/ubuntu/data-stage pm2 start server/server.js --name uptime-kuma-stage
+            echo "==> Restarting app with PM2 (loading .env)"
+            set -a; source .env; set +a
+            pm2 restart uptime-kuma-stage --update-env || \
+              pm2 start server/server.js --name uptime-kuma-stage --update-env
 
             echo "==> Deploy to STAGE completed successfully"
