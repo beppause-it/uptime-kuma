@@ -44,7 +44,7 @@ jobs:
             git pull origin main
 
             echo "==> Installing dependencies"
-            npm install --omit=dev --no-audit
+            npm install --no-audit
 
             echo "==> Building frontend"
             npm run build
