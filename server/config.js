@@ -37,6 +37,8 @@ const localWebSocketURL = getLocalWebSocketURL();
 
 const demoMode = args["demo"] || false;
 
+const authBaseUrl = process.env.AUTH_API_URL || process.env.AUTH_BASE_URL || null;
+
 module.exports = {
     args,
     hostname,
@@ -47,4 +49,5 @@ module.exports = {
     isSSL,
     localWebSocketURL,
     demoMode,
+    authBaseUrl,
 };

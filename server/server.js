@@ -193,6 +193,7 @@ const { SetupDatabase } = require("./setup-database");
 const { chartSocketHandler } = require("./socket-handlers/chart-socket-handler");
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Global Middleware
 app.use(function (req, res, next) {
@@ -226,6 +227,21 @@ let needSetup = false;
     } catch (e) {
         log.error("server", "Failed to prepare your database: " + e.message);
         process.exit(1);
+    }
+
+    // Validate AUTH_BASE_URL if configured
+    if (config.authBaseUrl) {
+        try {
+            const parsedAuthUrl = new URL(config.authBaseUrl);
+            if (![ "http:", "https:" ].includes(parsedAuthUrl.protocol)) {
+                throw new Error("AUTH_BASE_URL must use http or https protocol");
+            }
+            log.info("sso", `SSO auth backend configured: ${config.authBaseUrl}`);
+        } catch (e) {
+            log.error("sso", `Invalid AUTH_BASE_URL: "${config.authBaseUrl}" — ${e.message}. SSO endpoint will respond with 503.`);
+        }
+    } else {
+        log.info("sso", "AUTH_BASE_URL not set — SSO token-login endpoint is disabled (responds 503)");
     }
 
     // Database should be ready now
@@ -358,6 +374,136 @@ let needSetup = false;
     const statusPageRouter = require("./routers/status-page-router");
     app.use(statusPageRouter);
 
+    // ***************************
+    // SSO shared helpers
+    // ***************************
+
+    /**
+     * Validate a JWT token against the external auth backend.
+     * Returns the ssoUser profile object (with at least .email).
+     * Throws { code: "token_invalid" } on 4xx or { code: "auth_unavailable" } on 5xx/network.
+     * @param {string} token
+     * @param {string} authBaseUrl
+     * @returns {Promise<object>} ssoUser
+     */
+    async function ssoValidateToken(token, authBaseUrl) {
+        const axios = require("axios");
+        try {
+            const authResponse = await axios.get(`${authBaseUrl}/auth/user`, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 10000,
+            });
+            const ssoUser = authResponse.data && authResponse.data.user;
+            if (!ssoUser || !ssoUser.email) {
+                throw { code: "auth_unavailable" };
+            }
+            return ssoUser;
+        } catch (e) {
+            if (e.code) {
+                throw e;
+            }
+            if (e.response && e.response.status >= 400 && e.response.status < 500) {
+                throw { code: "token_invalid" };
+            }
+            throw { code: "auth_unavailable" };
+        }
+    }
+
+    /**
+     * Find an existing active local user by email, or create one.
+     * @param {string} email
+     * @returns {Promise<object>} RedBeanNode user
+     */
+    async function ssoFindOrCreateLocalUser(email) {
+        let user = await R.findOne("user", " username = ? AND active = 1 ", [email]);
+        if (!user) {
+            const { nanoid } = require("nanoid");
+            user = R.dispense("user");
+            user.username = email;
+            user.password = await passwordHash.generate(nanoid(32));
+            user.active = 1;
+            await R.store(user);
+            log.info("sso", `Created new SSO user: ${email}`);
+        }
+        return user;
+    }
+
+    // ***************************
+    // SSO Hub Token Login
+    // ***************************
+    app.post("/api/auth/token-login", async (req, res) => {
+        const isJSON = req.headers["accept"] && req.headers["accept"].includes("application/json");
+
+        const errorResponse = (httpCode, errorCode) => {
+            if (isJSON) {
+                return res.status(httpCode).json({ success: false, error: errorCode });
+            }
+            return res.redirect(`/login?error=${errorCode}`);
+        };
+
+        // If AUTH_BASE_URL is not configured, SSO is unavailable
+        const authBaseUrl = config.authBaseUrl;
+        if (!authBaseUrl) {
+            return errorResponse(503, "auth_unavailable");
+        }
+
+        // If no users exist yet, redirect to setup — SSO is skipped
+        if (needSetup) {
+            if (isJSON) {
+                return res.status(503).json({ success: false, error: "setup_required" });
+            }
+            return res.redirect("/setup");
+        }
+
+        // Validate token presence
+        const token = req.body && req.body.token;
+        if (!token) {
+            return errorResponse(400, "token_missing");
+        }
+
+        // Validate redirect_to to prevent open redirect
+        let redirectTo = (req.body && req.body.redirect_to) || "/dashboard";
+        if (!redirectTo.startsWith("/") || redirectTo.startsWith("//")) {
+            redirectTo = "/dashboard";
+        }
+
+        // Validate token against SSO auth backend and find/create local user
+        let user;
+        try {
+            const ssoUser = await ssoValidateToken(token, authBaseUrl);
+            user = await ssoFindOrCreateLocalUser(ssoUser.email);
+        } catch (e) {
+            if (e.code === "token_invalid") {
+                return errorResponse(401, "token_invalid");
+            }
+            return errorResponse(503, "auth_unavailable");
+        }
+
+        // Generate internal Uptime Kuma JWT
+        const ukToken = User.createJWT(user, server.jwtSecret);
+
+        // Set HttpOnly cookie (12 ore, come da specifica SSO hub).
+        // Il socket.io middleware lo legge server-side al momento della connessione.
+        res.cookie("auth_token", ukToken, {
+            httpOnly: true,
+            path: "/",
+            sameSite: "Lax",
+            maxAge: 12 * 60 * 60 * 1000,
+        });
+
+        if (isJSON) {
+            return res.json({ success: true, redirectUrl: redirectTo });
+        }
+        return res.redirect(redirectTo);
+    });
+
+    // SSO logout: clears the HttpOnly auth_token cookie so the socket middleware
+    // no longer auto-logs the user in on the next connection.
+    app.get("/api/auth/sso-logout", (req, res) => {
+        res.clearCookie("auth_token", { path: "/", sameSite: "Lax" });
+        res.json({ ok: true });
+    });
+
     // Universal Route Handler, must be at the end of all express routes.
     app.get("*", async (_request, response) => {
         if (_request.originalUrl.startsWith("/upload/")) {
@@ -365,6 +511,26 @@ let needSetup = false;
         } else {
             response.send(server.indexHTML);
         }
+    });
+
+    // SSO cookie middleware: reads auth_token from the socket handshake headers
+    // and attaches the validated user to the socket before the connection handler runs.
+    io.use(async (socket, next) => {
+        try {
+            const rawCookies = socket.handshake.headers.cookie || "";
+            const match = rawCookies.match(/(?:^|; )auth_token=([^;]*)/);
+            if (match) {
+                const ssoToken = decodeURIComponent(match[1]);
+                const decoded = jwt.verify(ssoToken, server.jwtSecret);
+                const ssoUser = await R.findOne("user", " username = ? AND active = 1 ", [decoded.username]);
+                if (ssoUser && decoded.h === shake256(ssoUser.password, SHAKE256_LENGTH)) {
+                    socket.ssoUser = ssoUser;
+                }
+            }
+        } catch (_) {
+            // Invalid or expired SSO cookie — proceed without auto-login
+        }
+        next();
     });
 
     log.debug("server", "Adding socket handler");
@@ -499,13 +665,51 @@ let needSetup = false;
                     }
                 }
             } else {
-                log.warn("auth", `Incorrect username or password for user ${data.username}. IP=${clientIP}`);
+                // Local auth failed — try external SSO backend if configured
+                const authBaseUrl = config.authBaseUrl;
+                if (authBaseUrl) {
+                    try {
+                        log.info("sso", `Local auth failed for ${data.username}, trying SSO backend. IP=${clientIP}`);
+                        const axios = require("axios");
+                        const loginResp = await axios.post(`${authBaseUrl}/auth/token`, {
+                            email: data.username,
+                            password: data.password,
+                            version: "4.0",
+                        }, { timeout: 10000 });
 
-                callback({
-                    ok: false,
-                    msg: "authIncorrectCreds",
-                    msgi18n: true,
-                });
+                        const extToken = loginResp.data && loginResp.data.token;
+                        if (!extToken) {
+                            throw { code: "token_invalid" };
+                        }
+
+                        const ssoProfile = await ssoValidateToken(extToken, authBaseUrl);
+                        const user = await ssoFindOrCreateLocalUser(ssoProfile.email);
+
+                        log.info("sso", `SSO fallback login success for ${ssoProfile.email}. IP=${clientIP}`);
+                        await afterLogin(socket, user);
+                        callback({
+                            ok: true,
+                            token: User.createJWT(user, server.jwtSecret),
+                        });
+                    } catch (e) {
+                        const detail = e.response
+                            ? `HTTP ${e.response.status}: ${JSON.stringify(e.response.data)}`
+                            : (e.code || e.message);
+                        log.warn("sso", `SSO fallback login failed for ${data.username}: ${detail}. IP=${clientIP}`);
+                        callback({
+                            ok: false,
+                            msg: "authIncorrectCreds",
+                            msgi18n: true,
+                        });
+                    }
+                } else {
+                    log.warn("auth", `Incorrect username or password for user ${data.username}. IP=${clientIP}`);
+                    callback({
+                        ok: false,
+                        msg: "authIncorrectCreds",
+                        msgi18n: true,
+                    });
+                }
             }
         });
 
@@ -990,7 +1194,7 @@ let needSetup = false;
 
                 log.info("monitor", `Get Monitor: ${monitorID} User ID: ${socket.userID}`);
 
-                let monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                let monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
                 const monitorData = [{ id: monitor.id, active: monitor.active }];
                 const preloadData = await Monitor.preparePreloadData(monitorData);
                 callback({
@@ -1113,7 +1317,7 @@ let needSetup = false;
                 const startTime = Date.now();
 
                 // Check if this is a group monitor
-                const monitor = await R.findOne("monitor", " id = ? AND user_id = ? ", [monitorID, socket.userID]);
+                const monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
 
                 // Log with context about deletion type
                 if (monitor && monitor.type === "group") {
@@ -1728,6 +1932,14 @@ let needSetup = false;
             log.info("auth", "Disabled Auth: auto login to admin");
             await afterLogin(socket, await R.findOne("user"));
             socket.emit("autoLogin");
+        } else if (socket.ssoUser) {
+            log.info("sso", `SSO cookie auto-login for user: ${socket.ssoUser.username}`);
+            await afterLogin(socket, socket.ssoUser);
+            // Emit a real JWT so the frontend stores it in localStorage —
+            // avoids the "authentication disabled" UI and allows proper re-auth on reconnect.
+            socket.emit("ssoLogin", {
+                token: User.createJWT(socket.ssoUser, server.jwtSecret),
+            });
         } else {
             socket.emit("loginRequired");
             log.debug("auth", "need auth");
@@ -1787,10 +1999,11 @@ async function updateMonitorNotification(monitorID, notificationIDList) {
  * @throws {Error} The specified user does not own the monitor
  */
 async function checkOwner(userID, monitorID) {
-    let row = await R.getRow("SELECT id FROM monitor WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    // Monitors are shared across all authenticated users — ownership is not enforced.
+    let row = await R.getRow("SELECT id FROM monitor WHERE id = ? ", [monitorID]);
 
     if (!row) {
-        throw new Error("You do not own this monitor.");
+        throw new Error("Monitor not found.");
     }
 }
 
@@ -1879,7 +2092,7 @@ async function startMonitor(userID, monitorID) {
 
     log.info("manage", `Resume Monitor: ${monitorID} User ID: ${userID}`);
 
-    await R.exec("UPDATE monitor SET active = 1 WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    await R.exec("UPDATE monitor SET active = 1 WHERE id = ? ", [monitorID]);
 
     let monitor = await R.findOne("monitor", " id = ? ", [monitorID]);
 
@@ -1912,7 +2125,7 @@ async function pauseMonitor(userID, monitorID) {
 
     log.info("manage", `Pause Monitor: ${monitorID} User ID: ${userID}`);
 
-    await R.exec("UPDATE monitor SET active = 0 WHERE id = ? AND user_id = ? ", [monitorID, userID]);
+    await R.exec("UPDATE monitor SET active = 0 WHERE id = ? ", [monitorID]);
 
     if (monitorID in server.monitorList) {
         await server.monitorList[monitorID].stop();
